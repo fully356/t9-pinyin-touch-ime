@@ -1068,6 +1068,13 @@ internal sealed class KeyboardSession
             ImeHost.Shared.CanCommitForeground());
         if (!ImeHost.Shared.HasOfficialT9Profile())
         {
+            // [DSH 诊断] 记录"前台进程里 T9 不是活动配置"这一早期返回。
+            // 这是 SyncCore 的第一道闸门，命中后后续所有判定与日志都不会执行。
+            Log.Info(
+                $"[诊断] SyncCore 早退: HasOfficialT9Profile=false "
+                + $"top={top.ToInt64()} fg={fg.ToInt64()} "
+                + $"canCommit={ImeHost.Shared.CanCommitForeground()} "
+                + $"docFocus={ImeHost.Shared.HasDocumentFocus}");
             _invocationAuthorized = false;
             _invocationOrigin = PointerInvocationOrigin.Unknown;
             ResetPendingFirstShow();
@@ -1825,15 +1832,36 @@ internal sealed class KeyboardSession
 
     private void TryAuthorizeSlateFocus(bool hasField, IntPtr top)
     {
+        // [DSH 诊断] 记录本函数的提前返回原因，避免"点了没日志"无法判断。
         if (_invocationAuthorized
             || !KeyboardInvocationPolicy.ShouldReauthorizeAfterRevoke(_revokedThisSync))
         {
+            Log.Info(
+                $"[诊断] 授权判定跳过: 已授权={_invocationAuthorized} "
+                + $"可再授权={KeyboardInvocationPolicy.ShouldReauthorizeAfterRevoke(_revokedThisSync)} "
+                + $"hasField={hasField}");
             return;
         }
 
         var slate = TouchDevicePolicy.CurrentPreferTouchHitSlop();
-        var looksLikeText = InputInvocationProbe.FocusedLooksLikeTextInput();
+        // 微信 4.x 聊天输入框：UIA 能拿到 caret（hasField=True、来源=caret），
+        // 但 FocusedLooksLikeTextInput() 判不出来，looksLikeText 一直是 false，
+        // 于是 editTap=false、整条授权链在下面直接 return —— 这就是
+        // 「微信里唤醒不了输入法」的真正原因（同一时刻 DSH 的 looksLikeText=True，所以正常）。
+        //
+        // hasField 本身就是「找到了输入框」的强证据：取输入框在非文本控件上会明确失败
+        // （日志里的「否因=控件类型=ControlType.Window/Button」）。所以把它并入。
+        var looksLikeText = InputInvocationProbe.FocusedLooksLikeTextInput() || hasField;
         var editTap = EditTouch.AllowsShow(looksLikeText || _foreground.FocusEnteredTextInput);
+        // [DSH 诊断] 记录弹出判定的全部输入，用于定位"点了输入框却不出键盘"的原因。
+        // 纯日志，不改变任何行为判定。
+        Log.Info(
+            $"[诊断] 弹出判定 slate={slate} looksLikeText={looksLikeText} "
+            + $"focusEntered={_foreground.FocusEnteredTextInput} "
+            + $"docFocus={ImeHost.Shared.HasDocumentFocus} "
+            + $"editTap={editTap} hasField={hasField} "
+            + $"pendingPointer={_pendingPointer is not null} "
+            + $"hasRecentExtGesture={SipLifecycle.Shared.HasRecentExternalGesture()}");
         if (!editTap)
         {
             return;

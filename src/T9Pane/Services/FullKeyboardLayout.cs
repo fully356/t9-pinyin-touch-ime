@@ -202,11 +202,18 @@ internal static class T9KeyFace
         "分词", "ABC", "DEF", "GHI", "JKL", "MNO", "PQRS", "TUV", "WXYZ"
     ];
 
-    public const double FontSize = 19;
-    public const double EnglishFontSize = 24;
-    public const double SymbolFontSize = 26;
-    public const double NumberFontSize = 22;
+    // 基准字号。实际字号再乘 KeyboardChromeSize.UiScale，让文字跟盘面一起变大变小。
+    private const double BaseFontSize = 19;
+    private const double BaseEnglishFontSize = 24;
+    private const double BaseSymbolFontSize = 26;
+    private const double BaseNumberFontSize = 22;
+
     public const bool SymbolSemiBold = false;
+
+    public static double FontSize => BaseFontSize * KeyboardChromeSize.UiScale;
+    public static double EnglishFontSize => BaseEnglishFontSize * KeyboardChromeSize.UiScale;
+    public static double SymbolFontSize => BaseSymbolFontSize * KeyboardChromeSize.UiScale;
+    public static double NumberFontSize => BaseNumberFontSize * KeyboardChromeSize.UiScale;
 
     public static double FaceSizeFor(string _) => FontSize;
 }
@@ -216,25 +223,44 @@ internal static class T9KeyFace
 /// </summary>
 internal static class KeyboardChromeSize
 {
+    /// <summary>用户可调的整盘缩放（托盘「调整键盘大小」）。1.0 = 原始尺寸。</summary>
+    public const double MinUiScale = 0.7;
+    public const double MaxUiScale = 1.6;
+
+    private static double _uiScale = 1.0;
+
+    /// <summary>
+    /// 全盘统一缩放。所有尺寸常量都乘它，所以命中映射
+    /// （HostHitMap 按 layout/frame 比例换算）自动保持一致。
+    /// </summary>
+    public static double UiScale
+    {
+        get => _uiScale;
+        set => _uiScale = ClampUiScale(value);
+    }
+
+    public static double ClampUiScale(double value) =>
+        double.IsFinite(value) ? Math.Clamp(value, MinUiScale, MaxUiScale) : 1.0;
+
     /// <summary>
     /// 只放大九键 3×3 和英文 26 键。标题、候选、功能键、数字/符号保持原尺寸。
     /// </summary>
     public const double PadScale = 1.2;
-    public const double FramePad = 16;
-    public const double Title = 38;
-    public const double Candidate = 34;
-    public const double CandidateButton = 28;
-    public const double CandidateCell = 38;
-    public const double Function = 52;
-    public const double CompactWidth = 400;
-    public const double CompactBoard = 220;
-    public const double T9Board = CompactBoard * PadScale;
-    public const double CompactHeight = FramePad + Title + Candidate + Function + T9Board;
-    public const double EnglishRail = 64;
-    public const double EnglishLetterUnit = 63.6 * PadScale;
-    public const double EnglishWidth = FramePad + EnglishRail * 2 + EnglishLetterUnit * 10;
-    public const double SymbolRail = 52;
-    public const double FullWidth = 840 * PadScale;
+    public static double FramePad => 16 * UiScale;
+    public static double Title => 38 * UiScale;
+    public static double Candidate => 34 * UiScale;
+    public static double CandidateButton => 28 * UiScale;
+    public static double CandidateCell => 38 * UiScale;
+    public static double Function => 52 * UiScale;
+    public static double CompactWidth => 400 * UiScale;
+    public static double CompactBoard => 220 * UiScale;
+    public static double T9Board => CompactBoard * PadScale;
+    public static double CompactHeight => FramePad + Title + Candidate + Function + T9Board;
+    public static double EnglishRail => 64 * UiScale;
+    public static double EnglishLetterUnit => 63.6 * PadScale * UiScale;
+    public static double EnglishWidth => FramePad + EnglishRail * 2 + EnglishLetterUnit * 10;
+    public static double SymbolRail => 52 * UiScale;
+    public static double FullWidth => 840 * PadScale * UiScale;
     public const double NumberColumns = 3;
     public const double NumberRows = 4;
 

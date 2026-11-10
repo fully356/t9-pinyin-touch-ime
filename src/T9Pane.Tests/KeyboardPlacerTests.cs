@@ -5,44 +5,61 @@ namespace T9Pane.Tests;
 
 public class KeyboardPlacerTests
 {
+    // 固定落点策略：键盘钉在输入框所在显示器工作区的右下角，与光标/输入框位置无关。
+    // Gap=8；尺寸夹在 [160, work-16] 之间。这些用例验证该落点而不是旧的跟随光标行为。
+
     [Fact]
-    public void Flyout_search_box_places_keyboard_over_menu_not_outside()
+    public void Flyout_search_box_anchors_keyboard_to_work_bottom_right()
     {
         var fly = Rect(400, 200, 1200, 900);
         var search = Rect(420, 840, 980, 888);
         var work = Rect(0, 0, 1920, 1080);
         var box = KeyboardPlacer.Place(new InputField(IntPtr.Zero, search, fly), 620, 360, work);
 
-        Assert.True(box.Intersects(fly), "九键必须叠在开始菜单上，不能整块在菜单外");
-        Assert.True(box.Bottom <= search.Top + 8, "九键应贴在搜索框上方");
-        Assert.True(box.Top < fly.Bottom - 80, "不能再落到菜单底边外侧");
+        AssertBottomRight(box, work, 620, 360);
     }
 
     [Fact]
-    public void Ordinary_caret_stays_above_when_there_is_room()
+    public void Ordinary_field_ignores_caret_and_anchors_bottom_right()
     {
         var caret = Rect(200, 400, 202, 424);
         var work = Rect(0, 0, 1920, 1080);
         var box = KeyboardPlacer.Place(new InputField(IntPtr.Zero, caret, default), 620, 360, work);
 
-        Assert.True(box.Bottom <= caret.Top);
         Assert.False(box.IsEmpty);
+        AssertBottomRight(box, work, 620, 360);
     }
 
     [Fact]
-    public void Tight_work_area_does_not_clamp_over_the_caret_line()
+    public void Keyboard_that_fits_keeps_requested_size_in_bottom_right()
     {
         var caret = Rect(200, 480, 202, 506);
         var work = Rect(0, 0, 1920, 1040);
         var box = KeyboardPlacer.Place(
             new InputField(IntPtr.Zero, caret, default), 620, 540, work);
 
-        Assert.False(box.Intersects(caret), "夹到工作区时不能把打字行盖住");
-        Assert.True(box.Bottom <= caret.Top || box.Top >= caret.Bottom);
+        AssertBottomRight(box, work, 620, 540);
     }
 
     [Fact]
-    public void Chat_compose_box_taller_than_72_is_still_excluded()
+    public void Keyboard_larger_than_work_is_clamped_but_stays_inside()
+    {
+        var caret = Rect(200, 480, 202, 506);
+        var work = Rect(0, 0, 800, 500);
+        var box = KeyboardPlacer.Place(
+            new InputField(IntPtr.Zero, caret, default), 620, 540, work);
+
+        // 高度 540 超过 work-16=484 被夹住；宽度 620 未超限保持原值。整体仍在工作区内。
+        Assert.True(box.Left >= work.Left + 8);
+        Assert.True(box.Top >= work.Top + 8);
+        Assert.True(box.Right <= work.Right - 8);
+        Assert.True(box.Bottom <= work.Bottom - 8);
+        Assert.Equal(620, box.Width);
+        Assert.Equal(work.Height - 16, box.Height);
+    }
+
+    [Fact]
+    public void Tall_chat_compose_box_still_anchors_bottom_right()
     {
         var caret = Rect(480, 1140, 482, 1170);
         var fieldBox = Rect(400, 1080, 980, 1190);
@@ -57,12 +74,11 @@ public class KeyboardPlacerTests
             360,
             work);
 
-        Assert.False(box.Intersects(fieldBox), "组合框高于 72 时仍不能盖住输入行");
-        Assert.True(box.Bottom <= fieldBox.Top);
+        AssertBottomRight(box, work, 620, 360);
     }
 
     [Fact]
-    public void Untrusted_box_caret_on_tall_field_excludes_the_bottom_line()
+    public void Untrusted_caret_on_tall_field_still_anchors_bottom_right()
     {
         var boxTop = Rect(1058, 202, 1060, 226);
         var fieldBox = Rect(400, 200, 1200, 1180);
@@ -78,12 +94,11 @@ public class KeyboardPlacerTests
             360,
             work);
 
-        var typingLine = Rect(400, 1132, 1200, 1180);
-        Assert.False(placed.Intersects(typingLine), "外框顶边不能把底行组合区盖住");
+        AssertBottomRight(placed, work, 620, 360);
     }
 
     [Fact]
-    public void Compact_field_box_is_excluded_like_cfs_exclude()
+    public void Compact_field_box_anchors_bottom_right()
     {
         var caret = Rect(420, 844, 422, 868);
         var fieldBox = Rect(400, 840, 980, 888);
@@ -98,8 +113,20 @@ public class KeyboardPlacerTests
             360,
             work);
 
-        Assert.False(box.Intersects(fieldBox));
-        Assert.True(box.Bottom <= fieldBox.Top);
+        AssertBottomRight(box, work, 620, 360);
+    }
+
+    private static void AssertBottomRight(NativeRect box, NativeRect work, int width, int height)
+    {
+        const int gap = 8;
+        width = Math.Min(width, Math.Max(160, work.Width - gap * 2));
+        height = Math.Min(height, Math.Max(160, work.Height - gap * 2));
+        Assert.Equal(width, box.Width);
+        Assert.Equal(height, box.Height);
+        Assert.Equal(work.Right - width - gap, box.Left);
+        Assert.Equal(work.Bottom - height - gap, box.Top);
+        Assert.True(box.Right <= work.Right - gap);
+        Assert.True(box.Bottom <= work.Bottom - gap);
     }
 
     [Fact]

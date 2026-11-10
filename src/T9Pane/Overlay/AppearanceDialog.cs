@@ -36,6 +36,45 @@ internal static class AppearanceDialog
         ShowWindow("调整键盘透明度", 360, 150, body, settings);
     }
 
+    /// <summary>
+    /// 整盘缩放。九键/英文/数字/符号四种盘面、字号、行高一起变，
+    /// 命中映射按 layout/frame 比例换算，所以缩放后按键位置不会错。
+    /// </summary>
+    public static void ShowScale(T9OverlayWindow overlay, AppSettings settings)
+    {
+        var label = new TextBlock { Margin = new Thickness(0, 0, 0, 8) };
+        var slider = new Slider
+        {
+            Minimum = KeyboardChromeSize.MinUiScale * 100,
+            Maximum = KeyboardChromeSize.MaxUiScale * 100,
+            TickFrequency = 5,
+            IsSnapToTickEnabled = true,
+            Value = KeyboardChromeSize.UiScale * 100
+        };
+
+        void RefreshLabel()
+        {
+            label.Text =
+                $"键盘大小 {(int)Math.Round(KeyboardChromeSize.UiScale * 100)}%"
+                + $"　（九键盘 {KeyboardChromeSize.CompactWidth:0} × {KeyboardChromeSize.CompactHeight:0}）";
+        }
+
+        void Apply()
+        {
+            settings.BoardScale = KeyboardChromeSize.ClampUiScale(slider.Value / 100);
+            KeyboardChromeSize.UiScale = settings.BoardScale;
+            RefreshLabel();
+            overlay.ApplyScale();
+        }
+
+        RefreshLabel();
+        slider.ValueChanged += (_, _) => Apply();
+        var body = new StackPanel();
+        body.Children.Add(label);
+        body.Children.Add(slider);
+        ShowWindow("调整键盘大小", 400, 160, body, settings);
+    }
+
     public static void ShowSkin(T9OverlayWindow overlay, AppSettings settings)
     {
         var keyBox = new ComboBox { Margin = new Thickness(0, 0, 0, 10) };

@@ -155,15 +155,36 @@ internal static class TextOutput
 
     public static void PostBackspace(IntPtr targetWindow = default)
     {
+        // 用 SendInput 注入**真实**键盘事件。
+        //
+        // 原来走 SendMessage(WM_KEYDOWN/WM_CHAR/WM_KEYUP)：原生 Win32（记事本）
+        // 和 Electron（DSH）都收，但 **Windows Terminal 这类 XAML/WinUI 应用的输入栈
+        // 只读操作系统输入队列，会直接忽略别的进程塞进来的窗口消息** ——
+        // 表现就是「能打字、不能删字」（用户的 Qwen 本地助手跑在 Windows Terminal 里）。
+        // 补扫描码也没用：问题不在消息内容，在投递通道。
+        // SendInput 进的是系统输入队列，三类应用都认。
+        _ = targetWindow;
+        var ok = Dispatch([Virtual(NativeMethods.VkBack, keyUp: false), Virtual(NativeMethods.VkBack, keyUp: true)]);
+        Log.Info($"[诊断] 退格 → SendInput ok={ok} uiAccess={UiAccessToken.Has()}");
+    }
+
+    public static void PostBackspaceLegacy(IntPtr targetWindow = default)
+    {
         var hwnd = ResolveEditHwnd(targetWindow);
         if (hwnd == IntPtr.Zero)
         {
             return;
         }
 
-        NativeMethods.SendMessage(hwnd, NativeMethods.WmKeyDown, new IntPtr(NativeMethods.VkBack), new IntPtr(1));
-        NativeMethods.SendMessage(hwnd, NativeMethods.WmChar, new IntPtr(8), new IntPtr(1));
-        NativeMethods.SendMessage(hwnd, NativeMethods.WmKeyUp, new IntPtr(NativeMethods.VkBack), new IntPtr(unchecked((int)0xC0000001)));
+        // lParam 的 bit16~23 是扫描码。原来这里是 1（扫描码 0），
+        // 而 Chromium/Electron 系客户端会**拒收扫描码为 0 的键盘消息**（拿它判定消息是否合成），
+        // 于是「能打字、不能删字」—— Qwen 本地助手就是这么中招的。
+        // 记事本这类原生 Win32 应用不校验扫描码，所以一直看不出问题。
+        // VK_BACK 的扫描码是 0x0E；keyup 另外要置 bit30（前次键状态）与 bit31（转换状态）。
+        const int backScan = 0x0E << 16;
+        NativeMethods.SendMessage(hwnd, NativeMethods.WmKeyDown, new IntPtr(NativeMethods.VkBack), new IntPtr(backScan | 1));
+        NativeMethods.SendMessage(hwnd, NativeMethods.WmChar, new IntPtr(8), new IntPtr(backScan | 1));
+        NativeMethods.SendMessage(hwnd, NativeMethods.WmKeyUp, new IntPtr(NativeMethods.VkBack), new IntPtr(backScan | unchecked((int)0xC0000001)));
     }
 
     private static IntPtr ResolveEditHwnd(IntPtr targetWindow)

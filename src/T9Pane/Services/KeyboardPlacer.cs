@@ -306,24 +306,44 @@ internal static class KeyboardPlacer
         return Place(field, width, height, WorkOf(caret));
     }
 
+    /// <summary>
+    /// 固定落点：输入框所在显示器工作区的右下角。
+    ///
+    /// 早先是跟随输入光标（横向对齐 caret.Left，纵向优先放打字行上方、放不下再落到下方）。
+    /// 按用户要求改为固定右下角：位置可预测，不再随输入框位置跳动。
+    /// work 仍按输入光标所在显示器取，多屏时落到正确那块屏的右下角。
+    /// </summary>
     public static NativeRect Place(InputField field, int width, int height, NativeRect work)
     {
-        var caret = field.Caret;
-        if (caret.IsEmpty)
-        {
-            caret = new NativeRect { Left = 80, Top = 80, Right = 82, Bottom = 104 };
-        }
-
         width = Math.Min(width, Math.Max(160, work.Width - Gap * 2));
         height = Math.Min(height, Math.Max(160, work.Height - Gap * 2));
+        return Box(work.Right - width - Gap, work.Bottom - height - Gap, width, height);
+    }
 
-        if (!field.Occluder.IsEmpty)
+    /// <summary>
+    /// 把窗口夹回工作区内。切到更宽的盘面（英文 26 键 / 全键）时
+    /// ResizePinnedBottom 保持左边界不动，右下角落点会把右边界推出屏幕。
+    /// </summary>
+    public static NativeRect ClampToWork(NativeRect box) => ClampToWork(box, WorkOf(box));
+
+    public static NativeRect ClampToWork(NativeRect box, NativeRect work)
+    {
+        if (box.IsEmpty || work.IsEmpty)
         {
-            return PlaceByFlyout(field, width, height, work);
+            return box;
         }
 
-        var left = Math.Clamp(caret.Left, work.Left + Gap, work.Right - width - Gap);
-        return PlaceAround(ExcludeTypingLine(field, caret), left, width, height, work);
+        var width = box.Width;
+        var height = box.Height;
+        var minLeft = work.Left + Gap;
+        var minTop = work.Top + Gap;
+        var maxLeft = work.Right - width - Gap;
+        var maxTop = work.Bottom - height - Gap;
+
+        // 窗口比工作区还大时没有可夹区间，钉左上即可（与原逻辑一样允许溢出）。
+        var left = maxLeft >= minLeft ? Math.Clamp(box.Left, minLeft, maxLeft) : minLeft;
+        var top = maxTop >= minTop ? Math.Clamp(box.Top, minTop, maxTop) : minTop;
+        return Box(left, top, width, height);
     }
 
     /// <summary>

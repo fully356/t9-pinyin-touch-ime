@@ -86,6 +86,7 @@ internal partial class T9OverlayWindow
     private Action? _keyRepeatAction;
     private Func<bool>? _keyRepeatGate;
     private bool _immediateTapFired;
+    private bool _phraseCommitting;
     private Button? _pressedHostKey;
     private bool _holdHostFrame;
 
@@ -442,6 +443,105 @@ internal partial class T9OverlayWindow
         }
 
         RequestPublishHost();
+    }
+
+    /// <summary>
+    /// 键盘大小变化后重建盘面。尺寸都是编译期算好的（键宽、字号、行高），
+    /// 光改窗口大小不够，必须整盘重建。
+    /// </summary>
+    public void ApplyScale() => BuildKeys();
+
+    private Point _resizeOrigin;
+    private double _resizeStartScale = 1;
+    private double _resizeStartW = 1;
+    private double _resizeStartH = 1;
+    private bool _resizing;
+
+    /// <summary>
+    /// 右下角「◢」手柄拖动缩放。只改 UiScale，其余尺寸常量都乘它，
+    /// 所以键宽、字号、行高、命中图会一起跟着变（切盘防溢出由 ClampToWork 兜）。
+    /// </summary>
+    private void OnResizeGripDown(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        _resizing = true;
+        _resizeOrigin = e.GetPosition(this);
+        _resizeStartScale = KeyboardChromeSize.UiScale;
+        var (width, height) = CurrentDesignSize();
+        _resizeStartW = Math.Max(1, width);
+        _resizeStartH = Math.Max(1, height);
+        ResizeGrip?.CaptureMouse();
+    }
+
+    private void OnResizeGripMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (!_resizing)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        var now = e.GetPosition(this);
+        var fx = (_resizeStartW + (now.X - _resizeOrigin.X)) / _resizeStartW;
+        var fy = (_resizeStartH + (now.Y - _resizeOrigin.Y)) / _resizeStartH;
+        // 斜着拖时取较大的那个方向：向右或向下都能放大。
+        var next = KeyboardChromeSize.ClampUiScale(_resizeStartScale * Math.Max(fx, fy));
+        if (Math.Abs(next - KeyboardChromeSize.UiScale) < 0.005)
+        {
+            return;
+        }
+
+        KeyboardChromeSize.UiScale = next;
+        ApplyScale();
+    }
+
+    private void OnResizeGripUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_resizing)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        _resizing = false;
+        ResizeGrip?.ReleaseMouseCapture();
+        _settings.BoardScale = KeyboardChromeSize.UiScale;
+        _settings.Save();
+        Log.Info($"拖动调整键盘大小 -> {KeyboardChromeSize.UiScale * 100:0}%");
+    }
+
+    private readonly VoiceInput _voice = new();
+    private bool _voiceHooked;
+
+    /// <summary>按住说话：按下开始识别。</summary>
+    private void OnVoiceDown(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        if (!_voiceHooked)
+        {
+            _voiceHooked = true;
+            // 识别在后台线程回调，必须切回 UI 线程再上屏。
+            _voice.Recognized += text =>
+                Dispatcher.BeginInvoke(new Action(() => SendText(text)));
+        }
+
+        if (_voice.Start())
+        {
+            VoiceButton.Content = "松手上屏";
+        }
+        else
+        {
+            VoiceButton.Content = "不可用";
+            Log.Warn($"语音输入不可用：{_voice.LastError}");
+        }
+    }
+
+    /// <summary>松手：让当前这句识别完再停。</summary>
+    private void OnVoiceUp(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        _voice.Stop();
+        VoiceButton.Content = "语音";
     }
 
     private static ImageSource? LoadSkin(string path)
@@ -1486,9 +1586,19 @@ internal partial class T9OverlayWindow
                 FunctionBar.Visibility = full ? Visibility.Collapsed : Visibility.Visible;
             }
 
+            if (TitleRow is not null)
+            {
+                TitleRow.Height = new GridLength(KeyboardChromeSize.Title);
+            }
+
+            if (CandidateRow is not null)
+            {
+                CandidateRow.Height = new GridLength(KeyboardChromeSize.Candidate);
+            }
+
             if (FunctionRow is not null)
             {
-                FunctionRow.Height = full ? new GridLength(0) : new GridLength(52);
+                FunctionRow.Height = full ? new GridLength(0) : new GridLength(KeyboardChromeSize.Function);
             }
 
             if (LangButton is not null)
@@ -1498,10 +1608,8 @@ internal partial class T9OverlayWindow
                 LangButton.ToolTip = "中 / EN";
             }
 
-            if (DigitButton is not null)
-            {
-                DigitButton.Content = _board is Board.Number or Board.SymbolCn or Board.SymbolEn ? "返回" : "123";
-            }
+            // 原 123 功能键已改为语音键（OnVoiceDown / OnVoiceUp）；
+            // 切数字盘请用标题栏的「数字」标签，功能不丢。
 
             HighlightTab();
             RefreshFunctionIcons();
@@ -1613,6 +1721,8 @@ internal partial class T9OverlayWindow
         // 键盘贴在输入行上方。切盘钉住底边，只改高度，不要钉顶边再让
         // 会话按 UIA 重摆——数字盘更高，钉顶会把底边压进输入行。
         _placed = BoardPlaceResume.ResizePinnedBottom(_placed, width, height);
+        // 固定右下角后，切到更宽的盘面（英文 26 键 / 全键）会把右边界推出屏幕，夹回来。
+        _placed = KeyboardPlacer.ClampToWork(_placed);
         var hwnd = new WindowInteropHelper(this).Handle;
         if (hwnd == IntPtr.Zero)
         {
@@ -1898,7 +2008,7 @@ internal partial class T9OverlayWindow
 
         IReadOnlyList<string> items;
         Action<string> tap;
-        string? selected = null;
+        var selected = _confirmedSyllables.Count > 0 ? _confirmedSyllables[^1] : null;
         var syllables = CandidateFallPolicy.ComposingChinese(
                 _board == Board.Pinyin,
                 _board == Board.Full,
@@ -2066,7 +2176,10 @@ internal partial class T9OverlayWindow
             return;
         }
 
+        // 必须一并推送组合：只 RefreshCandidates 的话编码框/组合串不跟着变，
+        // 点了音节看起来"没反应"（对照 ComposeLetter 是两者都调）。
         RefreshCandidates();
+        PushComposition();
     }
 
     private void BuildCandidateFall()
@@ -2546,6 +2659,16 @@ internal partial class T9OverlayWindow
         _keyReleaseTimer.Start();
     }
 
+    /// <summary>
+    /// 强制分音节（隔音符）。按一下把当前编码的首音节定下来，
+    /// 之后输入的数字从下一个音节重新开始。
+    /// 例：9426 默认切成 xian（先），按一下就变成 xi'an（西安）。
+    ///
+    /// 原实现是 FlingFall 甩候选条，跟「分词」毫无关系，候选少时按下去没反应 ——
+    /// 这就是「分词键不能用」的原因。改走左栏点音节同一条路径 SelectPinyin()。
+    ///
+    /// 只有在「候选条展开」时保留原来的甩动：那时它在当滚动条用。
+    /// </summary>
     private void OnSplit()
     {
         if (_candidatesExpanded && _candidateScroll is not null)
@@ -2562,20 +2685,54 @@ internal partial class T9OverlayWindow
             return;
         }
 
-        if (CandidateScroller is null)
+        if (_numberPad || (_digits.Length == 0 && _letters.Length == 0))
         {
             return;
         }
 
-        FlingFall(
-            new FallScrollTarget
+        var all = QueryCurrent();
+        if (all.Count == 0)
+        {
+            return;
+        }
+
+        // 优先取第一个「双音节以上」候选的首音节做切分点。
+        // 9426 的顶候选是「先 xian」——单音节，拿它切等于没切；
+        // 而「西安 xi an」排在下面，用它才能切出 xi + an。
+        var first = "";
+        foreach (var candidate in all)
+        {
+            var head = FirstSyllable(candidate.Pinyin);
+            if (head.Length > 0 && head.Length < T9Engine.CompactLetters(candidate.Pinyin).Length)
             {
-                Viewer = CandidateScroller,
-                Get = () => _candidateBarOffset,
-                Set = value => _candidateBarOffset = value,
-                Horizontal = true
-            },
-            2200);
+                first = head;
+                break;
+            }
+        }
+
+        if (first.Length == 0)
+        {
+            // 全部都是单音节，就退回顶候选的首音节（一般等于不切）。
+            first = FirstSyllable(all[0].Pinyin);
+        }
+
+        if (first.Length == 0)
+        {
+            return;
+        }
+
+        SelectPinyin(first);
+    }
+
+    private static string FirstSyllable(string pinyin)
+    {
+        if (string.IsNullOrEmpty(pinyin))
+        {
+            return "";
+        }
+
+        var cut = pinyin.IndexOfAny([' ', '\'', '’', '-']);
+        return (cut < 0 ? pinyin : pinyin[..cut]).Trim();
     }
 
     private void OnRetype()
@@ -3062,6 +3219,37 @@ internal partial class T9OverlayWindow
             {
                 return;
             }
+
+            // 浮层把位移 >= 28 的一律判成 swipe，可快速连按时手指本来就会带一点滑动。
+            // 字母/数字/符号盘都不是瀑布区，HandleSwipe 在这里必然返回 false
+            // （「方向为 None」或「起止点都不在瀑布区」），于是这一击就整个丢了 ——
+            // 打字一快就吞字，正是用户报的现象。
+            // 按「按下」的位置补一次点击把字母救回来。
+            // 只对键区生效：候选条/侧栏的滑动没被消费时不能乱补，那里一点就会上屏候选。
+            if (!IsInside(BoardHost, start))
+            {
+                return;
+            }
+
+            var rescued = ResolveHostButton(x1, y1, "滑动补点击");
+            if (rescued is null)
+            {
+                // 补点击落在侧栏/空白上属正常（那不是按键），不按未命中告警。
+                return;
+            }
+
+            if (_pressedHostKey is null)
+            {
+                BeginHostPress(rescued);
+            }
+
+            _holdHostFrame = false;
+            if (!_hostTapActions.TryInvoke(rescued))
+            {
+                rescued.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            }
+
+            ReleaseHostPressSoon();
         });
     }
 
@@ -3221,11 +3409,55 @@ internal partial class T9OverlayWindow
         }
     }
 
+    /// <summary>
+    /// 自定义常用词简码：当前数字串正好等于某条简码时直接上屏整句。
+    /// 只认「完全相等」，不做前缀匹配 —— 打到一半就跳会非常难受。
+    /// 命中后输入串清零，所以再按的数字属于下一轮。
+    /// </summary>
+    private bool TryPhraseShortcut()
+    {
+        if (_phraseCommitting || _numberPad || !_settings.PhraseAutoCommit)
+        {
+            return false;
+        }
+
+        var code = _digits;
+        if (string.IsNullOrEmpty(code) || code.Length < PhraseBook.MinCodeLength)
+        {
+            return false;
+        }
+
+        PhraseBook.ReloadIfChanged();
+        if (!PhraseBook.TryGet(code, out var phrase))
+        {
+            return false;
+        }
+
+        _phraseCommitting = true;
+        try
+        {
+            Log.Info($"常用短语简码 {code} 上屏 {phrase.Length} 字");
+            SendText(phrase);
+            ResetComposition();
+        }
+        finally
+        {
+            _phraseCommitting = false;
+        }
+
+        return true;
+    }
+
     private void RefreshCandidates()
     {
         using var scope = Perf.Begin("candidates.refresh");
         try
         {
+        if (TryPhraseShortcut())
+        {
+            return;
+        }
+
         _candidates.Clear();
         if ((_digits.Length == 0 && _letters.Length == 0)
             || _numberPad
@@ -3503,7 +3735,8 @@ internal partial class T9OverlayWindow
 
         Map(LangButton, () => OnModeClicked(LangButton!, new RoutedEventArgs()));
         Map(SpaceButton, OnSpace);
-        Map(DigitButton, () => OnDigitModeClicked(DigitButton!, new RoutedEventArgs()));
+        // 数字盘改由标题栏「数字」标签切换；这一格现在是语音键（OnVoiceDown / OnVoiceUp）。
+        Map(NewlineButton, OnNewline);
         Map(
             EnterButton,
             OnEnterTap,
@@ -3659,6 +3892,31 @@ internal partial class T9OverlayWindow
         OnEnter();
     }
 
+    /// <summary>
+    /// 换行键：先把未决候选上屏，再发 Shift+Enter。
+    ///
+    /// 不能用文本通道送 "\n" —— 部分应用的对话框会把它当成替换当前组合范围，
+    /// 刚上屏的内容会一起消失（用户实测：记事本正常，对话框里内容没了）。
+    /// 也不能在没候选时 ResetComposition()，那等于直接丢弃刚打的编码。
+    /// Shift+Enter 是纯编辑按键，聊天/多行框的通用换行，且不碰组合范围。
+    /// </summary>
+    private void OnNewline()
+    {
+        if (_candidates.Count > 0)
+        {
+            Commit(_candidates[0]);
+        }
+
+        try
+        {
+            System.Windows.Forms.SendKeys.SendWait("+{ENTER}");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"换行键发送失败: {ex.Message}");
+        }
+    }
+
     private void OnEnter()
     {
         var latin = EnterCommitPolicy.LatinText(
@@ -3796,16 +4054,30 @@ internal partial class T9OverlayWindow
         if (vk == NativeMethods.VkBack)
         {
             using var scope = Perf.Begin("key.backspace");
-            if (ImeHost.Shared.Backspace())
+            if (ConsoleInputSurface.IsTerminalHost(_host) || ShellProcess.IsWeChat(_host))
             {
+                // Windows Terminal / conhost 的 TSF 文本存储不落实 kind=4 退格；
+                // 微信的 TSF 文本存储同样与真实编辑器脱钩，命令送达却一个字不删。
+                // 这类目标退格只能走 SendInput 注入真实 VK_BACK（IME 不吞键，穿透到应用）。
+                Log.Info($"[诊断] 退格 → 终端/微信宿主，跳过 TSF 直走 SendInput host={_host.ToInt64()}");
+                TextOutput.SendVirtualKey(vk, _host);
+                return;
+            }
+
+            var tsfOk = ImeHost.Shared.Backspace();
+            if (tsfOk)
+            {
+                Log.Info($"[诊断] 退格 → TSF 通道成功 host={_host.ToInt64()}");
                 return;
             }
 
             var surface = ProbeSystemSurface();
-            if (SystemBackspacePolicy.ShouldUseUia(
-                    surface.TextSurface,
-                    surface.ProfileLease,
-                    HasCapturedSystemTarget()))
+            var useUia = SystemBackspacePolicy.ShouldUseUia(
+                surface.TextSurface,
+                surface.ProfileLease,
+                HasCapturedSystemTarget());
+            Log.Info($"[诊断] 退格 → TSF 失败, uia={useUia} host={_host.ToInt64()}");
+            if (useUia)
             {
                 // UIA 写入在专用线程上完成，失败时由它自己走键盘兜底。
                 SystemBoxInput.TryBackspace(_host);

@@ -20,6 +20,13 @@ internal sealed class AppSettings
     public bool SymbolLock { get; set; }
     public bool EnglishPredict { get; set; } = true;
     public double OverlayOpacity { get; set; } = 1;
+
+    /// <summary>整盘缩放倍率，1.0 = 原始尺寸。范围见 KeyboardChromeSize.Min/MaxUiScale。</summary>
+    public double BoardScale { get; set; } = 1.0;
+
+    /// <summary>常用词简码命中时直接上屏；关掉则只作为第一个候选。</summary>
+    public bool PhraseAutoCommit { get; set; } = true;
+
     public Dictionary<string, KeyboardSkinSetting> KeyboardSkins { get; set; } = [];
     public List<string> ExtraLexiconDirectories { get; set; } = [];
 
@@ -35,6 +42,7 @@ internal sealed class AppSettings
 
     public static string SettingsPath => Path.Combine(AppDataDirectory, "settings.json");
     public static string UserLexiconPath => Path.Combine(AppDataDirectory, "user-lexicon.txt");
+    public static string PhrasePath => Path.Combine(AppDataDirectory, "phrases.txt");
     public static string LogPath => Path.Combine(AppDataDirectory, "t9pane.log");
 
     public static AppSettings Load()
@@ -52,6 +60,9 @@ internal sealed class AppSettings
 
                 loaded.OverlayOpacity = KeyboardSkinPolicy.ClampOverlay(
                     loaded.OverlayOpacity <= 0 ? 1 : loaded.OverlayOpacity);
+                loaded.BoardScale = KeyboardChromeSize.ClampUiScale(
+                    loaded.BoardScale <= 0 ? 1 : loaded.BoardScale);
+                KeyboardChromeSize.UiScale = loaded.BoardScale;
                 loaded.KeyboardSkins ??= [];
                 loaded.Enabled = true;
                 loaded.PreviewMode = false;

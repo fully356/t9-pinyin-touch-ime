@@ -43,6 +43,20 @@ internal static class ConsoleInputSurface
             && IsWindow(NativeMethods.GetAncestor(fg, NativeMethods.GaRoot));
     }
 
+    private static readonly HashSet<string> TerminalHostProcesses =
+    [
+        "windowsterminal", "openconsole", "conhost"
+    ];
+
+    /// <summary>
+    /// 控制台/终端宿主（Windows Terminal、经典 conhost）的输入栈只读系统输入队列：
+    /// TSF kind=4 退格命令能送达却一个字不删，别的进程塞进来的 WM_KEYDOWN 也被忽略。
+    /// 这类目标退格必须改走 SendInput，绕开 TSF/UIA 两条通道。
+    /// </summary>
+    public static bool IsTerminalHost(IntPtr hwnd) =>
+        hwnd != IntPtr.Zero
+        && (IsWindow(hwnd) || TerminalHostProcesses.Contains(ShellProcess.Name(hwnd)));
+
     public static bool IsViewport(ControlType type) =>
         type == ControlType.Document
         || type == ControlType.Pane

@@ -59,6 +59,14 @@ internal static class ShellProcess
 
     public static bool IsSearch(IntPtr hwnd) => Search.Contains(Name(hwnd));
 
+    private static readonly HashSet<string> WeChatHosts = ["weixin", "wechat"];
+
+    /// <summary>
+    /// 微信的 TSF 文本存储与真实编辑器脱钩：kind=4 退格命令能送达却一个字不删，
+    /// 与 Windows Terminal 同病。这类目标退格必须走 SendInput 注入真实 VK_BACK。
+    /// </summary>
+    internal static bool IsWeChat(IntPtr hwnd) => WeChatHosts.Contains(Name(hwnd));
+
     /// <summary>
     /// 这些外壳宿主自己不承载文本框，点进搜索后由 SearchHost 接管输入焦点，
     /// 但前台窗口仍然留在宿主上。要读光标就必须先转到 SearchHost 窗口，

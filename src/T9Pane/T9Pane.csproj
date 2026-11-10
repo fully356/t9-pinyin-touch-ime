@@ -26,6 +26,9 @@
     <InternalsVisibleTo Include="T9Pane.Tests" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="System.Speech" Version="8.0.0" />
+  </ItemGroup>
+  <ItemGroup>
     <None Update="Data\xiaobai-t9\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

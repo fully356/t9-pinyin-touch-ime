@@ -22,6 +22,7 @@ internal sealed class TrayHost : IDisposable
     private readonly Action _onExit;
     private readonly Action _onOpacity;
     private readonly Action _onSkin;
+    private readonly Action _onScale;
     private Window? _menu;
 
     public TrayHost(
@@ -30,7 +31,8 @@ internal sealed class TrayHost : IDisposable
         Action onReload,
         Action onExit,
         Action onOpacity,
-        Action onSkin)
+        Action onSkin,
+        Action onScale)
     {
         _settings = settings;
         _onChanged = onChanged;
@@ -38,6 +40,7 @@ internal sealed class TrayHost : IDisposable
         _onExit = onExit;
         _onOpacity = onOpacity;
         _onSkin = onSkin;
+        _onScale = onScale;
         _icon = new NotifyIcon
         {
             Text = "T9 九键输入法",
@@ -70,12 +73,19 @@ internal sealed class TrayHost : IDisposable
             _settings.AutoStart = !_settings.AutoStart;
             SaveAndNotify();
         });
+        AddCheck(items, "简码自动上屏", _settings.PhraseAutoCommit, () =>
+        {
+            _settings.PhraseAutoCommit = !_settings.PhraseAutoCommit;
+            SaveAndNotify();
+        });
         items.Children.Add(Rule());
         AddItem(items, "调整键盘透明度", _onOpacity);
         AddItem(items, "添加键盘图片", _onSkin);
+        AddItem(items, "调整键盘大小", _onScale);
         items.Children.Add(Rule());
         AddItem(items, "重新加载词库", _onReload);
         AddItem(items, "打开用户词库", OpenUserLexicon);
+        AddItem(items, "打开常用短语", OpenPhrases);
         AddItem(items, "打开日志", () => OpenFile(AppSettings.LogPath));
         items.Children.Add(Rule());
         AddItem(items, "退出", _onExit);
@@ -233,6 +243,13 @@ internal sealed class TrayHost : IDisposable
         }
 
         OpenFile(AppSettings.UserLexiconPath);
+    }
+
+    private static void OpenPhrases()
+    {
+        PhraseBook.EnsureTemplate();
+        PhraseBook.Reload();
+        OpenFile(PhraseBook.Path);
     }
 
     private static void OpenFile(string path)

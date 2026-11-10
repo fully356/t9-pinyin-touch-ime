@@ -139,7 +139,8 @@ public partial class App
             ReloadLexicon,
             ExitApp,
             () => AppearanceDialog.ShowOpacity(_overlay, _settings),
-            () => AppearanceDialog.ShowSkin(_overlay, _settings));
+            () => AppearanceDialog.ShowSkin(_overlay, _settings),
+            () => AppearanceDialog.ShowScale(_overlay, _settings));
 
         Log.Info($"T9 九键输入法后端启动，{_catalog.Summary}，词库 {_engine.Count} 条");
         UpdatePointerTracking();
@@ -157,8 +158,42 @@ public partial class App
         }
 
         UpdatePointerTracking();
+        RescanChromiumA11y();
         _session.NoteImeChanged();
         _session.Sync(ImeHost.Shared.HasDocumentFocus, layoutOnly: kind == 1);
+    }
+
+    private long _a11yRescanTicks;
+
+    /// <summary>
+    /// 补扫 Chromium/Electron 宿主的无障碍握手。
+    ///
+    /// ChromiumAccessibilityActivator.NoteForeground 只在「前台窗口变化」时被调用，
+    /// 而实测微信 4.x 里**切换聊天不会换前台窗口**，只会在同一个宿主里新建渲染子窗口 ——
+    /// 新窗口永远等不到握手，UIA 就读不到聊天输入框，
+    /// 表现为「微信里唤醒不了输入法」。这里每秒最多补扫一次；
+    /// 握手内部按 hwnd 去重，已应答过的不会重发。
+    /// </summary>
+    private void RescanChromiumA11y()
+    {
+        if (_chromiumA11y is null || _foreground is null)
+        {
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        var last = Interlocked.Read(ref _a11yRescanTicks);
+        if (now - last < 1000)
+        {
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref _a11yRescanTicks, now, last) != last)
+        {
+            return;
+        }
+
+        _chromiumA11y.NoteForeground(_foreground.LastTarget);
     }
 
     private void UpdatePointerTracking() =>
@@ -172,8 +207,9 @@ public partial class App
     {
         _catalog.Refresh();
         _engine.Load(_catalog, _settings.ExtraLexiconDirectories);
+        PhraseBook.Reload();
         _overlay?.RefreshChrome();
-        Log.Info($"已重新加载词库：{_engine.SourceDescription}");
+        Log.Info($"已重新加载词库：{_engine.SourceDescription}，常用短语 {PhraseBook.Count} 条");
     }
 
     private void ExitApp()
