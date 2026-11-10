@@ -29,6 +29,7 @@ internal sealed class T9Engine
     private readonly List<T9Entry> _entries = [];
     private readonly T9SyllableTable _syllables = new();
     private readonly Dictionary<string, List<int>> _exactFull = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<int>> _exactLetters = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<int>> _byFirstSyllable = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<int>> _initialPrefix = new(StringComparer.Ordinal);
     private readonly List<T9Entry> _latinEntries = [];
@@ -55,6 +56,7 @@ internal sealed class T9Engine
         _entries.Clear();
         _syllables.Clear();
         _exactFull.Clear();
+        _exactLetters.Clear();
         _byFirstSyllable.Clear();
         _initialPrefix.Clear();
         _latinEntries.Clear();
@@ -511,6 +513,31 @@ internal sealed class T9Engine
         return null;
     }
 
+    /// <summary>
+    /// 词库别码格式「主码;别码」（如 pinyin_simp_8105 的 "ya;aa"、"a;a"）。
+    /// 分号后是异读/简码别名，不是独立音节；整段保留会让 ToDigits 把别码字母也算进数字码、
+    /// Syllables 拼出 "aa"/"dea" 这类非法音节。逐音节只取分号前的主码。
+    /// </summary>
+    internal static string PrimaryCode(string code)
+    {
+        if (string.IsNullOrEmpty(code) || code.IndexOf(';') < 0)
+        {
+            return code;
+        }
+
+        var tokens = code.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < tokens.Length; i++)
+        {
+            var semi = tokens[i].IndexOf(';');
+            if (semi >= 0)
+            {
+                tokens[i] = tokens[i][..semi];
+            }
+        }
+
+        return string.Join(' ', tokens);
+    }
+
     public static IReadOnlyList<string> Syllables(string pinyin)
     {
         var parts = new List<string>();
@@ -526,7 +553,8 @@ internal sealed class T9Engine
 
         foreach (var raw in pinyin ?? "")
         {
-            if (raw is ' ' or '\'' or '’' or '-')
+            // 分号是别码分隔符，遇到就切断当前音节，避免把别码并进主音节。
+            if (raw is ' ' or '\'' or '’' or '-' or ';')
             {
                 Flush();
                 continue;
@@ -640,6 +668,7 @@ internal sealed class T9Engine
         {
             var entry = _entries[i];
             AddPosting(_exactFull, entry.FullDigits, i);
+            AddPosting(_exactLetters, CompactLetters(entry.Pinyin), i);
             AddPrefix(_initialPrefix, entry.InitialDigits, i);
             foreach (var syllable in Syllables(entry.Pinyin))
             {
@@ -654,6 +683,7 @@ internal sealed class T9Engine
         }
 
         SortPostings(_exactFull);
+        SortPostings(_exactLetters);
         SortPostings(_byFirstSyllable);
         SortPostings(_initialPrefix);
     }
@@ -767,8 +797,15 @@ internal sealed class T9Engine
             }
 
             var word = parts[0].Trim();
-            var code = parts[1].Trim().ToLowerInvariant();
-            if (word.Length == 0 || code.Length == 0 || word.StartsWith('#'))
+            var rawCode = parts[1].Trim().ToLowerInvariant();
+            if (word.Length == 0 || rawCode.Length == 0 || word.StartsWith('#'))
+            {
+                continue;
+            }
+
+            // 去掉「主码;别码」里的别码，避免别码污染数字码和音节表。
+            var code = PrimaryCode(rawCode);
+            if (code.Length == 0)
             {
                 continue;
             }

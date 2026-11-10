@@ -82,6 +82,32 @@ public class CompositionConsumePolicyTests
         Assert.Equal(first, T9Engine.FirstSyllable(pinyin));
         Assert.Equal(second, T9Engine.SyllableAt(pinyin, 1));
     }
+
+    [Theory]
+    [InlineData("a;a", "a")]
+    [InlineData("ya;aa", "ya")]
+    [InlineData("de;a", "de")]
+    [InlineData("ni hao;m", "ni hao")]
+    [InlineData("ni", "ni")]
+    public void Primary_code_drops_semicolon_alias_per_syllable(string raw, string expected)
+    {
+        Assert.Equal(expected, T9Engine.PrimaryCode(raw));
+    }
+
+    [Fact]
+    public void Syllables_treat_semicolon_as_a_separator_not_part_of_a_syllable()
+    {
+        // "de;a" 不能再被拼成非法音节 "dea"；主码 de 与别码 a 切成两段。
+        var parts = T9Engine.Syllables("de;a");
+        Assert.Equal(["de", "a"], parts);
+    }
+
+    [Fact]
+    public void ToDigits_primary_code_does_not_count_alias_letters()
+    {
+        // 别码 aa 不应计入数字码：a;a 的主码只有 a → 2，而不是 22。
+        Assert.Equal("2", T9Engine.ToDigits(T9Engine.PrimaryCode("a;a")));
+    }
 }
 
 public class T9SyllableTableTests
@@ -106,5 +132,52 @@ public class T9SyllableTableTests
     {
         Assert.Equal("426", T9SyllableTable.RemainingDigits("64426", ["ni"]));
         Assert.Equal("hao", T9SyllableTable.RemainingLetters("nihao", ["ni"]));
+    }
+
+    [Fact]
+    public void Exact_digits_returns_every_syllable_sharing_the_code()
+    {
+        var table = new T9SyllableTable();
+        foreach (var syllable in new[] { "ni", "mi", "niao", "nie" })
+        {
+            table.Add(syllable);
+        }
+
+        var exact = table.ExactDigits("64");
+        Assert.Contains("ni", exact);
+        Assert.Contains("mi", exact);
+        Assert.DoesNotContain("niao", exact);
+        Assert.Empty(table.ExactDigits("6"));
+    }
+
+    [Fact]
+    public void Prefix_digits_and_letters_only_return_strict_longer_syllables()
+    {
+        var table = new T9SyllableTable();
+        foreach (var syllable in new[] { "ni", "niao", "nie", "hao" })
+        {
+            table.Add(syllable);
+        }
+
+        var digitPrefix = table.PrefixDigits("64");
+        Assert.Contains("niao", digitPrefix);
+        Assert.Contains("nie", digitPrefix);
+        Assert.DoesNotContain("ni", digitPrefix);
+        Assert.DoesNotContain("hao", digitPrefix);
+
+        var letterPrefix = table.PrefixLetters("ni");
+        Assert.Contains("niao", letterPrefix);
+        Assert.Contains("nie", letterPrefix);
+        Assert.DoesNotContain("ni", letterPrefix);
+    }
+
+    [Fact]
+    public void Contains_letters_tracks_known_syllables()
+    {
+        var table = new T9SyllableTable();
+        table.Add("hao");
+        Assert.True(table.ContainsLetters("hao"));
+        Assert.False(table.ContainsLetters("ha"));
+        Assert.False(table.ContainsLetters(""));
     }
 }

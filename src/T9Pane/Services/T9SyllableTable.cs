@@ -10,6 +10,8 @@ internal sealed class T9SyllableTable
     private readonly List<T9Syllable> _all = [];
     private readonly HashSet<string> _texts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<string>> _byDigits = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<string>> _digitPrefixes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<string>> _letterPrefixes = new(StringComparer.Ordinal);
 
     public int Count => _all.Count;
 
@@ -18,6 +20,8 @@ internal sealed class T9SyllableTable
         _all.Clear();
         _texts.Clear();
         _byDigits.Clear();
+        _digitPrefixes.Clear();
+        _letterPrefixes.Clear();
     }
 
     public void Add(string text)
@@ -43,7 +47,69 @@ internal sealed class T9SyllableTable
         }
 
         list.Add(compact);
+
+        // 整句解码按数字/字母前缀补全末尾未打完的音节。约 400 个音节、每音节仅数个前缀，成本很低。
+        for (var len = 1; len < digits.Length; len++)
+        {
+            AddPrefix(_digitPrefixes, digits[..len], compact);
+        }
+
+        for (var len = 1; len < compact.Length; len++)
+        {
+            AddPrefix(_letterPrefixes, compact[..len], compact);
+        }
     }
+
+    private static void AddPrefix(Dictionary<string, List<string>> map, string key, string syllable)
+    {
+        if (!map.TryGetValue(key, out var list))
+        {
+            list = [];
+            map[key] = list;
+        }
+
+        if (!list.Contains(syllable, StringComparer.Ordinal))
+        {
+            list.Add(syllable);
+        }
+    }
+
+    /// <summary>数字码完全相等的所有合法音节（同码多音，如 64 → mi/ni/…）。</summary>
+    public IReadOnlyList<string> ExactDigits(string digits)
+    {
+        if (string.IsNullOrEmpty(digits))
+        {
+            return [];
+        }
+
+        return _byDigits.TryGetValue(digits, out var list) ? list : [];
+    }
+
+    /// <summary>以该数字码为严格前缀的完整音节（用于补全末尾未打完的音节，不含正好相等）。</summary>
+    public IReadOnlyList<string> PrefixDigits(string prefix)
+    {
+        if (string.IsNullOrEmpty(prefix))
+        {
+            return [];
+        }
+
+        return _digitPrefixes.TryGetValue(prefix, out var list) ? list : [];
+    }
+
+    /// <summary>以该字母串为严格前缀的完整音节（字母模式补全，不含正好相等）。</summary>
+    public IReadOnlyList<string> PrefixLetters(string prefix)
+    {
+        if (string.IsNullOrEmpty(prefix))
+        {
+            return [];
+        }
+
+        return _letterPrefixes.TryGetValue(prefix, out var list) ? list : [];
+    }
+
+    /// <summary>该字母串是否是一个合法完整音节。</summary>
+    public bool ContainsLetters(string syllable) =>
+        !string.IsNullOrEmpty(syllable) && _texts.Contains(syllable);
 
     /// <summary>
     /// 当前音节：数字码以已输入为前缀（含正好拼完）。
