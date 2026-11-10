@@ -909,7 +909,7 @@ internal sealed class T9Engine
         }
     }
 
-    private static char FoldPinyin(char ch) => ch switch
+    internal static char FoldPinyin(char ch) => ch switch
     {
         'ā' or 'á' or 'ǎ' or 'à' => 'a',
         'ō' or 'ó' or 'ǒ' or 'ò' => 'o',
