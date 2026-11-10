@@ -20,9 +20,13 @@ internal sealed record SentenceScoreOptions
     public double BigramBackoffDelta { get; init; } = 8;
     public double BigramWeight { get; init; } = 0.45;
     public double PerArcPenalty { get; init; } = 0.30;
-    public double WordLengthPriorStep { get; init; } = 0.12;
+    public double WordLengthPriorStep { get; init; } = 0.5;
     public int WordLengthPriorCap { get; init; } = 3;
-    public double PrefixPenalty { get; init; } = -0.8;
+    // 拆成单字是「没识别成词」的回退路径。字符语料的单字概率天然远高于词概率，
+    // 不惩罚会让高频繁体单字拼成的路径压过简体词条。对单字/前缀弧统一扣分，
+    // 使识别出的多字词在同一跨度上稳定胜出；该跨度真没有词时仍由单字内部排序兜底。
+    public double CharacterPenalty { get; init; } = -2.0;
+    public double PrefixPenalty { get; init; } = -2.5;
     public double FallbackPenalty { get; init; } = -16;
 }
 
@@ -32,26 +36,34 @@ internal sealed record SentenceScoreOptions
 /// </summary>
 internal sealed class SentenceScoreModel : ISentenceScoreModel
 {
-    private readonly double _totalBaseFrequency;
-    private readonly int _vocabularySize;
+    // 单字（字符级统计，频率可达数十万）与多字词（词级统计，通常数百）量纲不同，
+    // 必须各自在自己的分布池里归一化，否则拆成高频单字的路径会压过真正的词条。
+    private readonly double _charTotal;
+    private readonly int _charCount;
+    private readonly double _wordTotal;
+    private readonly int _wordCount;
     private readonly ISentenceLearningView? _learning;
     private readonly SentenceScoreOptions _options;
 
     public SentenceScoreModel(
-        double totalBaseFrequency,
-        int vocabularySize,
+        double charTotal,
+        int charCount,
+        double wordTotal,
+        int wordCount,
         ISentenceLearningView? learning = null,
         SentenceScoreOptions? options = null)
     {
-        _totalBaseFrequency = Math.Max(0, totalBaseFrequency);
-        _vocabularySize = Math.Max(1, vocabularySize);
+        _charTotal = Math.Max(0, charTotal);
+        _charCount = Math.Max(1, charCount);
+        _wordTotal = Math.Max(0, wordTotal);
+        _wordCount = Math.Max(1, wordCount);
         _learning = learning;
         _options = options ?? new SentenceScoreOptions();
     }
 
     public double Score(in SentenceArc arc, string? previousWord)
     {
-        var p1 = UnigramProbability(arc.Word, Math.Max(0, arc.Frequency));
+        var p1 = UnigramProbability(arc.Word, Math.Max(0, arc.Frequency), arc.Kind);
         var probability = p1;
 
         if (previousWord is not null && previousWord.Length > 0 && _learning is not null)
@@ -71,10 +83,14 @@ internal sealed class SentenceScoreModel : ISentenceScoreModel
         return score;
     }
 
-    private double UnigramProbability(string word, int frequency)
+    private double UnigramProbability(string word, int frequency, SentenceArcKind kind)
     {
         var eta = _options.UnigramSmoothing;
-        var denominator = _totalBaseFrequency + eta * _vocabularySize;
+        // 单字与前缀弧（补全的也是单字）走字符池；多字词走词池。
+        var isCharacter = kind is SentenceArcKind.Character or SentenceArcKind.Prefix;
+        var poolTotal = isCharacter ? _charTotal : _wordTotal;
+        var poolSize = isCharacter ? _charCount : _wordCount;
+        var denominator = poolTotal + eta * poolSize;
         var baseProbability = (frequency + eta) / Math.Max(denominator, 1e-12);
 
         var learning = _learning;
@@ -103,6 +119,7 @@ internal sealed class SentenceScoreModel : ISentenceScoreModel
 
     private double KindPenalty(SentenceArcKind kind) => kind switch
     {
+        SentenceArcKind.Character => _options.CharacterPenalty,
         SentenceArcKind.Prefix => _options.PrefixPenalty,
         SentenceArcKind.Fallback => _options.FallbackPenalty,
         _ => 0

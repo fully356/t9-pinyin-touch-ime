@@ -43,6 +43,7 @@ internal sealed class SentenceSegment
     public required string Word { get; init; }
     public required string Pinyin { get; init; }
     public required SentenceArcKind Kind { get; init; }
+    public int Frequency { get; init; }
 }
 
 internal sealed class SentencePath
@@ -78,10 +79,15 @@ internal interface ISentenceScoreModel
 internal sealed record SentenceDecoderOptions
 {
     public int MaxInputLength { get; init; } = 64;
+    public int MaxArcSpan { get; init; } = 24;
+    public int MaxWordArcsPerSpan { get; init; } = 24;
+    public int MaxCharacterArcsPerSpan { get; init; } = 16;
+    public int MaxPrefixArcsPerSuffix { get; init; } = 8;
     public int MaxArcsPerStart { get; init; } = 64;
     public int MaxTotalArcs { get; init; } = 4096;
-    public int MaxStatesPerPosition { get; init; } = 96;
-    public int MaxTransitions { get; init; } = 50_000;
+    public int MaxStatesPerPosition { get; init; } = 40;
+    public int MaxHypothesesPerPosition { get; init; } = 64;
+    public int MaxTransitions { get; init; } = 200_000;
     public double TimeBudgetMilliseconds { get; init; } = 8;
     public int PathCount { get; init; } = 8;
 }
@@ -252,6 +258,59 @@ internal sealed class SentenceDecoder
         {
             TrimStates(slot);
         }
+
+        TrimToGlobalCap(slot);
+    }
+
+    /// <summary>
+    /// 按末词分状态后假设数会组合膨胀（弧数 × 末词数）。这里对整个位置做束剪枝：
+    /// 每个状态至少保留其最优一条，其余按全局分数从低到高淘汰，把单位置假设数夹到上限。
+    /// </summary>
+    private void TrimToGlobalCap(Dictionary<(string? LastWord, int Progress), List<SentenceHypothesis>> slot)
+    {
+        var total = slot.Values.Sum(list => list.Count);
+        if (total <= _options.MaxHypothesesPerPosition)
+        {
+            return;
+        }
+
+        var removable = new List<(double Score, SentenceHypothesis Hypothesis)>();
+        foreach (var list in slot.Values)
+        {
+            var best = list[0];
+            foreach (var hypothesis in list)
+            {
+                if (hypothesis.Score > best.Score)
+                {
+                    best = hypothesis;
+                }
+            }
+
+            foreach (var hypothesis in list)
+            {
+                if (!ReferenceEquals(hypothesis, best))
+                {
+                    removable.Add((hypothesis.Score, hypothesis));
+                }
+            }
+        }
+
+        var removeCount = total - _options.MaxHypothesesPerPosition;
+        var toRemove = removable
+            .OrderBy(item => item.Score)
+            .Take(removeCount)
+            .Select(item => item.Hypothesis)
+            .ToHashSet();
+        foreach (var list in slot.Values)
+        {
+            list.RemoveAll(toRemove.Contains);
+        }
+
+        var empty = slot.Where(pair => pair.Value.Count == 0).Select(pair => pair.Key).ToList();
+        foreach (var key in empty)
+        {
+            slot.Remove(key);
+        }
     }
 
     private void TrimStates(Dictionary<(string?, int), List<SentenceHypothesis>> slot)
@@ -414,7 +473,8 @@ internal sealed class SentenceDecoder
                 End = current.End,
                 Word = arc.Word,
                 Pinyin = arc.Pinyin,
-                Kind = arc.Kind
+                Kind = arc.Kind,
+                Frequency = arc.Frequency
             });
             current = current.Previous;
         }

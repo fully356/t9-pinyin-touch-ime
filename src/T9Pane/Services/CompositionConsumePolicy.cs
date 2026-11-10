@@ -13,6 +13,12 @@ internal static class CompositionConsumePolicy
             return 0;
         }
 
+        // 整句由 Viterbi 完整覆盖当前输入（含末尾未打完的前缀弧），一次全部消费。
+        if (matchKind == "整句")
+        {
+            return typedDigits.Length;
+        }
+
         var full = T9Engine.ToDigits(pinyin);
         var initials = T9Engine.ToDigits(T9Engine.SyllableInitials(pinyin));
         if (matchKind is "组词" or "组句"
@@ -38,6 +44,12 @@ internal static class CompositionConsumePolicy
         if (typed.Length == 0)
         {
             return 0;
+        }
+
+        // 整句完整覆盖当前字母输入，一次消费完。
+        if (matchKind == "整句")
+        {
+            return typed.Length;
         }
 
         var compact = T9Engine.CompactLetters(pinyin);

@@ -9,6 +9,15 @@ internal sealed class T9Candidate
     public required string Pinyin { get; init; }
     public required int Frequency { get; init; }
     public required string MatchKind { get; init; }
+
+    /// <summary>整句解码路径分；仅 MatchKind="整句" 有值，越大越好。旧候选为 null。</summary>
+    public double? Score { get; init; }
+
+    /// <summary>实际消费的输入码长度；0 表示沿用 ToDigits(Pinyin) 推断（旧行为）。</summary>
+    public int ConsumedCodeLength { get; init; }
+
+    /// <summary>整句的实际切分，供 bigram/自造词学习；普通词候选为 null。</summary>
+    public IReadOnlyList<SentenceSegment>? Segments { get; init; }
 }
 
 internal sealed class T9Entry
@@ -34,8 +43,19 @@ internal sealed class T9Engine
     private readonly Dictionary<string, List<int>> _initialPrefix = new(StringComparer.Ordinal);
     private readonly List<T9Entry> _latinEntries = [];
     private readonly Dictionary<string, List<int>> _latinPrefixIndex = new(StringComparer.Ordinal);
+    private readonly SentenceDecoderOptions _decoderOptions = new();
+    private readonly SentenceDecoder _decoder;
+    private double _totalBaseFrequency;
+    private double _charFrequencyTotal;
+    private int _charCount;
+    private double _wordFrequencyTotal;
+    private int _wordCount;
     private string _rankedKey = "";
     private IReadOnlyList<T9Candidate> _ranked = [];
+
+    // 阶段⑤接入：学习视图与 bigram 上文，未接入时为 null，解码器退化为纯内置词频。
+    private ISentenceLearningView? _learningView;
+    private string? _previousWord;
     private static readonly Dictionary<char, char> LetterMap = new()
     {
         ['a'] = '2', ['b'] = '2', ['c'] = '2',
@@ -50,6 +70,11 @@ internal sealed class T9Engine
 
     public int Count => _entries.Count;
     public string SourceDescription { get; private set; } = "未加载词库";
+
+    public T9Engine()
+    {
+        _decoder = new SentenceDecoder(_decoderOptions);
+    }
 
     public void Load(ImeCatalog catalog, IEnumerable<string>? extraRoots = null)
     {
@@ -122,7 +147,84 @@ internal sealed class T9Engine
             return [];
         }
 
-        return Ranked($"9\n{digits}", digits.Length, take, () => CollectDigits(digits));
+        return Ranked($"9\n{digits}", digits.Length, take, () =>
+        {
+            var hits = CollectDigits(digits);
+            AppendSentenceCandidates(hits, digits, SentenceInputMode.Digits);
+            return hits;
+        });
+    }
+
+    /// <summary>
+    /// 跑整句 Viterbi，把多段真实词弧组成的整句作为「整句」候选合流。
+    /// 单弧结果交给现有全拼候选；含兜底弧的路径不展示。超长输入解码器返回空，
+    /// 自动回落到 CollectDigits 里既有的两段组句。
+    /// </summary>
+    private void AppendSentenceCandidates(
+        List<T9Candidate> hits,
+        string rawCode,
+        SentenceInputMode mode)
+    {
+        var parsed = mode == SentenceInputMode.Digits
+            ? PinyinInputParser.TryDigits(rawCode, out var digitInput) ? digitInput : null
+            : PinyinInputParser.TryLetters(rawCode, out var letterInput) ? letterInput : null;
+        if (parsed is null || parsed.Code.Length > _decoderOptions.MaxInputLength)
+        {
+            return;
+        }
+
+        var exactIndex = mode == SentenceInputMode.Digits ? _exactFull : _exactLetters;
+        var provider = new T9SentenceArcProvider(
+            parsed, _entries, exactIndex, _byFirstSyllable, _syllables, _decoderOptions);
+        var scorer = new SentenceScoreModel(
+            _charFrequencyTotal, _charCount,
+            _wordFrequencyTotal, _wordCount,
+            _learningView);
+        var result = _decoder.Decode(
+            provider, scorer, _previousWord, null, _decoderOptions.PathCount);
+
+        foreach (var path in result.Paths)
+        {
+            if (path.HasFallback)
+            {
+                continue; // 有正常候选时不展示纯/半兜底路径。
+            }
+
+            var realSegments = path.Segments
+                .Where(segment => segment.Kind != SentenceArcKind.Fallback)
+                .ToList();
+            if (realSegments.Count < 2)
+            {
+                continue; // 单段整词走现有全拼/全拼前缀候选，不重复包装。
+            }
+
+            var sentence = new T9Candidate
+            {
+                Word = path.Word,
+                Pinyin = path.Pinyin,
+                Frequency = realSegments.Sum(segment => Math.Max(0, segment.Frequency)),
+                MatchKind = "整句",
+                Score = path.Score,
+                ConsumedCodeLength = path.ConsumedCodeLength,
+                Segments = path.Segments
+            };
+
+            var existingIndex = hits.FindIndex(hit => hit.Word == path.Word);
+            if (existingIndex >= 0)
+            {
+                // 同词时：旧两段「组句」是同类组合产物且无概率分，用带 Viterbi 分的整句替换，
+                // 否则它会因无分被排序当作最低分，反被更差的有分整句压过。
+                // 词库里本就存在的整词（全拼/组词/短语等）保留不动。
+                if (hits[existingIndex].MatchKind == "组句")
+                {
+                    hits[existingIndex] = sentence;
+                }
+
+                continue;
+            }
+
+            hits.Add(sentence);
+        }
     }
 
     public IReadOnlyList<string> QuerySyllables(string digits, IReadOnlyList<string>? confirmed = null)
@@ -332,19 +434,25 @@ internal sealed class T9Engine
 
     public IReadOnlyList<T9Candidate> QueryLetters(string letters, int take = 40)
     {
-        var typed = CompactLetters(letters);
-        if (typed.Length == 0)
+        if (!PinyinInputParser.TryLetters(letters, out var input))
         {
             return [];
         }
 
+        var typed = input.Code;
         var digits = ToDigits(typed);
         if (digits.Length == 0)
         {
             return [];
         }
 
-        return Ranked($"L\n{typed}", digits.Length, take, () => CollectLetters(typed, digits));
+        // 缓存键带硬边界，xian 与 xi'an 不互相污染。
+        return Ranked(PinyinInputParser.CacheKey(input), digits.Length, take, () =>
+        {
+            var hits = CollectLetters(typed, digits);
+            AppendSentenceCandidates(hits, letters, SentenceInputMode.Letters);
+            return hits;
+        });
     }
 
     private List<T9Candidate> CollectLetters(string typed, string _)
@@ -686,6 +794,25 @@ internal sealed class T9Engine
         SortPostings(_exactLetters);
         SortPostings(_byFirstSyllable);
         SortPostings(_initialPrefix);
+
+        var total = 0.0;
+        foreach (var entry in _entries)
+        {
+            var freq = Math.Max(0, entry.Frequency);
+            total += freq;
+            if (entry.Word.Length == 1)
+            {
+                _charFrequencyTotal += freq;
+                _charCount++;
+            }
+            else
+            {
+                _wordFrequencyTotal += freq;
+                _wordCount++;
+            }
+        }
+
+        _totalBaseFrequency = total;
     }
 
     private void BuildLatinIndex()
