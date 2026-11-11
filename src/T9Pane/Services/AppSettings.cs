@@ -43,6 +43,7 @@ internal sealed class AppSettings
     public static string SettingsPath => Path.Combine(AppDataDirectory, "settings.json");
     public static string UserLexiconPath => Path.Combine(AppDataDirectory, "user-lexicon.txt");
     public static string PhrasePath => Path.Combine(AppDataDirectory, "phrases.txt");
+    public static string LearningPath => Path.Combine(AppDataDirectory, "learning.json");
     public static string LogPath => Path.Combine(AppDataDirectory, "t9pane.log");
 
     public static AppSettings Load()
