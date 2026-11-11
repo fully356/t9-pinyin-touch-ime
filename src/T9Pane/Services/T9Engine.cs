@@ -229,7 +229,8 @@ internal sealed class T9Engine
             _wordFrequencyTotal, _wordCount,
             _learningView);
         var result = _decoder.Decode(
-            provider, scorer, _previousWord, null, _decoderOptions.PathCount);
+            provider, scorer, _previousWord, null, _decoderOptions.PathCount,
+            contextFree: _learningView is null);
 
         foreach (var path in result.Paths)
         {

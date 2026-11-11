@@ -112,7 +112,8 @@ internal sealed class SentenceDecoder
         ISentenceScoreModel scorer,
         string? previousWord = null,
         IReadOnlyList<string>? confirmedSyllables = null,
-        int? take = null)
+        int? take = null,
+        bool contextFree = false)
     {
         var input = provider.Input;
         var n = input.Code.Length;
@@ -126,6 +127,12 @@ internal sealed class SentenceDecoder
         var timedOut = false;
         var transitions = 0;
         var totalArcs = 0;
+        // 生产主路径不传确认音节：跳过每弧的字符串切分，并把进度恒折叠为 0，
+        // 让状态键退化为单一末词，显著减少 Dictionary 元组分配。
+        var useConfirmed = confirmedSyllables is { Count: > 0 };
+        // 无 bigram 上下文时评分不依赖末词，所有假设汇入单一状态桶，按末词分组无意义，
+        // 把每位置假设数严格夹到 PathCount，避免状态组合膨胀（长串 DP 的主要开销）。
+        var collapsedKey = ((string?)null, 0);
 
         // best[i]：到达位置 i 的假设，按状态（末词, 确认进度）归并，每状态保留 top-K。
         var best = new Dictionary<(string? LastWord, int Progress), List<SentenceHypothesis>>[n + 1];
@@ -177,7 +184,13 @@ internal sealed class SentenceDecoder
                     continue;
                 }
 
-                var arcSyllables = arc.IsFallback ? [] : T9Engine.Syllables(arc.Pinyin);
+                // 仅在有确认音节约束时才切分拼音；生产主路径（无确认）省掉这部分字符串分配。
+                IReadOnlyList<string> arcSyllables = [];
+                if (useConfirmed && !arc.IsFallback)
+                {
+                    arcSyllables = T9Engine.Syllables(arc.Pinyin);
+                }
+
                 foreach (var state in best[i])
                 {
                     foreach (var hypothesis in state.Value)
@@ -189,13 +202,16 @@ internal sealed class SentenceDecoder
                             continue;
                         }
 
-                        if (!ConfirmedMatches(confirmedSyllables, hypothesis.ConfirmedProgress, arcSyllables))
+                        if (useConfirmed
+                            && !ConfirmedMatches(confirmedSyllables, hypothesis.ConfirmedProgress, arcSyllables))
                         {
                             continue;
                         }
 
                         transitions++;
-                        var progress = ConfirmedProgress(confirmedSyllables, hypothesis.ConfirmedProgress, arcSyllables.Count);
+                        var progress = useConfirmed
+                            ? ConfirmedProgress(confirmedSyllables, hypothesis.ConfirmedProgress, arcSyllables.Count)
+                            : 0;
                         var next = new SentenceHypothesis
                         {
                             Score = hypothesis.Score + scorer.Score(arc, hypothesis.LastWord),
@@ -208,7 +224,9 @@ internal sealed class SentenceDecoder
                             HasFallback = hypothesis.HasFallback || arc.IsFallback,
                             HasPrefix = hypothesis.HasPrefix || arc.Kind == SentenceArcKind.Prefix
                         };
-                        InsertPruned(best[j], (next.LastWord, progress), next);
+                        // contextFree：评分不依赖末词，用单一折叠键，严格按 PathCount 剪枝。
+                        var stateKey = contextFree ? collapsedKey : (next.LastWord, progress);
+                        InsertPruned(best[j], stateKey, next);
                     }
                 }
 
