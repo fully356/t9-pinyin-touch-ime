@@ -107,8 +107,7 @@ function Get-SignedVersionedIme([string]$arch) {
 function Get-InprocServer32(
     [Microsoft.Win32.RegistryView]$view,
     [Microsoft.Win32.RegistryHive]$hive =
-        [Microsoft.Win32.RegistryHive]::LocalMachine) {
-    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+        [Microsoft.Win32.RegistryHive]::LocalMachine) {    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
         $hive,
         $view)
     try {
@@ -151,6 +150,64 @@ function Set-UserInprocServer32(
     }
     finally {
         $baseKey.Dispose()
+    }
+}
+
+function Enable-T9InputProfile {
+    # 注册完成后把 T9 TIP 激活为当前输入法，省去重装后手动 Win+空格 切换。
+    # 已在提权会话验证：ITfInputProcessorProfileMgr.ActivateProfile 能正确写入
+    # 当前交互用户会话的活动配置。激活失败不阻断安装，仅记录（用户仍可手动切）。
+    try {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+[StructLayout(LayoutKind.Sequential)]
+public struct T9InstallProfile {
+    public uint Pt; public ushort Li; public Guid Clsid; public Guid Profile;
+    public Guid Category; public IntPtr Substitute; public uint Capabilities;
+    public IntPtr Hkl; public uint Flags;
+}
+[ComImport]
+[Guid("71C6E74C-0F28-11D8-A82A-00065B84435C")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IT9InstallProfileMgr {
+    [PreserveSig] int ActivateProfile(uint t, ushort l, ref Guid c, ref Guid p, IntPtr h, uint f);
+    [PreserveSig] int DeactivateProfile(uint t, ushort l, ref Guid c, ref Guid p, IntPtr h, uint f);
+    [PreserveSig] int GetProfile(uint t, ushort l, ref Guid c, ref Guid p, IntPtr h, out T9InstallProfile i);
+    [PreserveSig] int EnumProfiles(ushort l, out IntPtr e);
+    [PreserveSig] int ReleaseInputProcessor(ref Guid c, uint f);
+    [PreserveSig] int RegisterProfile(ref Guid c, ushort l, ref Guid p,
+        [MarshalAs(UnmanagedType.LPWStr)] string d, uint dl,
+        [MarshalAs(UnmanagedType.LPWStr)] string ic, uint il, uint ii,
+        IntPtr s, uint pl, int eb, uint f);
+    [PreserveSig] int UnregisterProfile(ref Guid c, ushort l, ref Guid p, uint f);
+    [PreserveSig] int GetActiveProfile(ref Guid cat, out T9InstallProfile prof);
+}
+public static class T9InstallActivator {
+    static readonly Guid ClsidProfiles = new Guid("33C53A50-F456-4884-B049-85FD643ECFED");
+    static readonly Guid TipKeyboard = new Guid("34745C63-B2F0-4784-8B67-5E12C8701A31");
+    const uint ActivateFlags = 0x20000000 | 0x00000001 | 0x00000004;
+    public static string Activate() {
+        var mgr = (IT9InstallProfileMgr)Activator.CreateInstance(
+            Type.GetTypeFromCLSID(ClsidProfiles, true));
+        var cat = TipKeyboard;
+        T9InstallProfile before;
+        mgr.GetActiveProfile(ref cat, out before);
+        var clsid = new Guid("A7E91C20-4B3D-4F18-9C2A-1B8E6D0A1001");
+        var profile = new Guid("A7E91C20-4B3D-4F18-9C2A-1B8E6D0A1002");
+        var hr = mgr.ActivateProfile(1, 0x0804, ref clsid, ref profile, IntPtr.Zero, ActivateFlags);
+        System.Threading.Thread.Sleep(300);
+        T9InstallProfile after;
+        mgr.GetActiveProfile(ref cat, out after);
+        return "before=" + before.Clsid + " activateHr=0x" + hr.ToString("X8") + " after=" + after.Clsid;
+    }
+}
+'@
+        $result = [T9InstallActivator]::Activate()
+        Write-Log "已激活 T9 输入法配置: $result"
+    }
+    catch {
+        Write-Log "激活 T9 输入法失败（不影响安装，可手动 Win+空格 切换）: $($_.Exception.Message)"
     }
 }
 
@@ -328,5 +385,7 @@ if ($WaitForPid -gt 0) {
         [void]$proc.WaitForExit(20000)
     }
 }
+
+Enable-T9InputProfile
 
 Write-Log "安装完成；高层副本须由普通桌面会话启动"
