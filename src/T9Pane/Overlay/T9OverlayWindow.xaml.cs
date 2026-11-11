@@ -2222,22 +2222,80 @@ internal partial class T9OverlayWindow
                 button.Foreground = (Brush)FindResource("AccentBrush");
             }
 
+            // 长整句独占整行，用可换行 TextBlock 承载，避免在窄格里被截断。
+            if (CandidateFlow.IsLong(candidate.Word))
+            {
+                button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+                button.Content = new TextBlock
+                {
+                    Text = candidate.Word,
+                    TextWrapping = TextWrapping.Wrap,
+                    TextAlignment = TextAlignment.Center,
+                    TextTrimming = TextTrimming.None,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+            }
+
             buttons.Add(button);
         }
 
-        _candidateFallOffset = FallFlow.Clamp(
-            _candidateFallOffset,
-            FallFlow.ContentHeight(buttons.Count, KeyboardChromeSize.CandidateCell),
-            height);
-        _candidateScroll = MakeFallViewer(
-            buttons,
-            board,
-            height,
-            KeyboardChromeSize.CandidateCell,
-            _candidateFallOffset);
+        var cellHeight = KeyboardChromeSize.CandidateCell;
+        var rows = CandidateFlow.Plan(all.Select(candidate => candidate.Word).ToList());
+        var contentHeight = CandidateFlow.ContentHeight(rows, cellHeight);
+        _candidateFallOffset = FallFlow.Clamp(_candidateFallOffset, contentHeight, height);
+        _candidateScroll = MakeCandidateFlowViewer(
+            buttons, rows, board, height, cellHeight, _candidateFallOffset);
         Grid.SetColumn(_candidateScroll, 1);
         root.Children.Add(_candidateScroll);
         BoardHost.Children.Add(root);
+    }
+
+    /// <summary>
+    /// 展开候选的混合瀑布流：短词按 CandidateFlow.Columns 列网格，长候选独占整行（更高、可换行）。
+    /// 仍是像素滚动的 ScrollViewer，惯性/拖动逻辑与原瀑布流一致。
+    /// </summary>
+    private ScrollViewer MakeCandidateFlowViewer(
+        IReadOnlyList<Button> buttons,
+        IReadOnlyList<CandidateRow> rows,
+        double width,
+        double height,
+        double cellHeight,
+        double offset)
+    {
+        var panel = new StackPanel { Width = width };
+        foreach (var row in rows)
+        {
+            var rowHeight = row.FullWidth ? CandidateFlow.FullRowHeight(cellHeight) : cellHeight;
+            var grid = new Grid { Width = width, Height = rowHeight };
+            for (var column = 0; column < CandidateFlow.Columns; column++)
+            {
+                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            }
+
+            if (row.FullWidth)
+            {
+                var button = buttons[row.Indices[0]];
+                button.Height = rowHeight;
+                Grid.SetColumn(button, 0);
+                Grid.SetColumnSpan(button, CandidateFlow.Columns);
+                grid.Children.Add(button);
+            }
+            else
+            {
+                for (var slot = 0; slot < row.Indices.Count; slot++)
+                {
+                    var button = buttons[row.Indices[slot]];
+                    button.Height = rowHeight;
+                    Grid.SetColumn(button, slot);
+                    grid.Children.Add(button);
+                }
+            }
+
+            panel.Children.Add(grid);
+        }
+
+        return MakeScrollViewer(panel, width, height, offset);
     }
 
     private void OnSymbolCategory(string name)
