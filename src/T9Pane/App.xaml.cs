@@ -12,6 +12,7 @@ public partial class App
     private Mutex? _mutex;
     private AppSettings _settings = new();
     private T9Engine _engine = new();
+    private UserLearning? _learning;
     private readonly ImeCatalog _catalog = new();
     private ForegroundTracker? _foreground;
     private PointerIntentTracker? _pointerIntent;
@@ -69,6 +70,8 @@ public partial class App
         _settings.OutputMode = OutputMode.BuiltInT9;
         _catalog.Refresh();
         _engine.Load(_catalog, _settings.ExtraLexiconDirectories);
+        _learning = UserLearning.Load(AppSettings.LearningPath);
+        _engine.AttachLearning(_learning);
         _foreground = new ForegroundTracker(work => Dispatcher.BeginInvoke(work));
         _chromiumA11y = new ChromiumAccessibilityActivator();
         _overlay = new T9OverlayWindow(_engine, _settings, _foreground);
@@ -207,6 +210,8 @@ public partial class App
     {
         _catalog.Refresh();
         _engine.Load(_catalog, _settings.ExtraLexiconDirectories);
+        // 重载主词库后重新挂载学习实例，保留内存里尚未落盘的学习数据。
+        _engine.AttachLearning(_learning);
         PhraseBook.Reload();
         _overlay?.RefreshChrome();
         Log.Info($"已重新加载词库：{_engine.SourceDescription}，常用短语 {PhraseBook.Count} 条");
@@ -227,6 +232,7 @@ public partial class App
         _fitter.Restore();
         _foreground?.Dispose();
         _tray?.Dispose();
+        _learning?.Dispose();
         _mutex?.Dispose();
         base.OnExit(e);
     }

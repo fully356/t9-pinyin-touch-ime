@@ -53,9 +53,12 @@ internal sealed class T9Engine
     private string _rankedKey = "";
     private IReadOnlyList<T9Candidate> _ranked = [];
 
-    // 阶段⑤接入：学习视图与 bigram 上文，未接入时为 null，解码器退化为纯内置词频。
+    // 学习视图与 bigram 上文；未接入时为 null，解码器退化为纯内置词频。
+    private UserLearning? _learning;
     private ISentenceLearningView? _learningView;
     private string? _previousWord;
+    private readonly T9LearnedLexicon _learnedLexicon = new();
+    private long _cachedLearningRevision = -1;
     private static readonly Dictionary<char, char> LetterMap = new()
     {
         ['a'] = '2', ['b'] = '2', ['c'] = '2',
@@ -74,6 +77,44 @@ internal sealed class T9Engine
     public T9Engine()
     {
         _decoder = new SentenceDecoder(_decoderOptions);
+    }
+
+    /// <summary>由 App 注入学习存储；为 null 时解码器纯用内置词频。</summary>
+    public void AttachLearning(UserLearning? learning)
+    {
+        _learning = learning;
+        _learningView = learning;
+        _cachedLearningRevision = -1;
+        InvalidateRanked();
+    }
+
+    /// <summary>记录一次中文候选上屏（整句按切分逐段学 unigram/bigram）。</summary>
+    public void LearnSelection(T9Selection selection)
+    {
+        if (_learning is null)
+        {
+            return;
+        }
+
+        _learning.Observe(selection);
+        _previousWord = selection.Segments is { Count: > 0 }
+            ? selection.Segments[^1].Word
+            : selection.Word;
+        InvalidateRanked();
+    }
+
+    /// <summary>非中文上屏（英文/符号/焦点切换）后切断 bigram 上文。</summary>
+    public void BreakLearningContext()
+    {
+        _previousWord = null;
+        _learning?.BreakContext();
+        InvalidateRanked();
+    }
+
+    public void InvalidateRanked()
+    {
+        _rankedKey = "";
+        _ranked = [];
     }
 
     public void Load(ImeCatalog catalog, IEnumerable<string>? extraRoots = null)
@@ -173,9 +214,16 @@ internal sealed class T9Engine
             return;
         }
 
+        // 自造词集合变化时只重建小索引，不重载主词库。
+        if (_learning is not null && _learning.Revision != _cachedLearningRevision)
+        {
+            _learnedLexicon.EnsureCurrent(_learning.SnapshotCustomWords(), _learning.Revision);
+            _cachedLearningRevision = _learning.Revision;
+        }
+
         var exactIndex = mode == SentenceInputMode.Digits ? _exactFull : _exactLetters;
         var provider = new T9SentenceArcProvider(
-            parsed, _entries, exactIndex, _byFirstSyllable, _syllables, _decoderOptions);
+            parsed, _entries, exactIndex, _byFirstSyllable, _syllables, _decoderOptions, _learnedLexicon);
         var scorer = new SentenceScoreModel(
             _charFrequencyTotal, _charCount,
             _wordFrequencyTotal, _wordCount,
@@ -354,10 +402,13 @@ internal sealed class T9Engine
         int take,
         Func<List<T9Candidate>> collect)
     {
-        if (!string.Equals(_rankedKey, key, StringComparison.Ordinal))
+        // 学习数据变化（unigram/bigram/自造词）后 revision 改变，强制重算排序。
+        var revision = _learning?.Revision ?? 0;
+        var effectiveKey = key + "|r" + revision;
+        if (!string.Equals(_rankedKey, effectiveKey, StringComparison.Ordinal))
         {
             _ranked = T9MatchRank.Order(collect(), typedLength, int.MaxValue);
-            _rankedKey = key;
+            _rankedKey = effectiveKey;
         }
 
         if (take >= _ranked.Count)

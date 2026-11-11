@@ -31,6 +31,7 @@ internal partial class T9OverlayWindow
     private bool _keyVisuallyPressed;
     private readonly DispatcherTimer _longPressTimer;
     private string _digits = "";
+    private bool _emittingChinese;
     private enum Board { Pinyin, Pinyin26, English, Full, Number, SymbolCn, SymbolEn }
 
     private Board _board = Board.Pinyin;
@@ -3793,13 +3794,63 @@ internal partial class T9OverlayWindow
 
     private void Commit(T9Candidate candidate)
     {
+        LearnFromCommit(candidate);
+        // 标记接下来的 EmitText 是中文候选上屏，不应被当作非中文输入而切断 bigram 上文。
+        _emittingChinese = !string.IsNullOrWhiteSpace(candidate.Pinyin);
         SendText(candidate.Word);
+        _emittingChinese = false;
         if (ContinueRemainder(candidate))
         {
             return;
         }
 
         ResetComposition();
+    }
+
+    /// <summary>
+    /// 在 _digits/_letters 被 ContinueRemainder/ResetComposition 修改前快照并记录学习。
+    /// 仅中文候选（有拼音）学习；整句带 Segments 逐段学，单词走单段。
+    /// </summary>
+    private void LearnFromCommit(T9Candidate candidate)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(candidate.Pinyin))
+            {
+                // 无拼音（英文/符号等）只切断上文，不学中文。
+                _engine.BreakLearningContext();
+                return;
+            }
+
+            var mode = _letters.Length > 0 ? SentenceInputMode.Letters : SentenceInputMode.Digits;
+            var canonicalCode = mode == SentenceInputMode.Letters
+                ? PinyinInputParser.TryLetters(_letters, out var letterInput) ? PinyinInputParser.CacheKey(letterInput) : _letters
+                : PinyinInputParser.TryDigits(_digits, out var digitInput) ? PinyinInputParser.CacheKey(digitInput) : _digits;
+
+            IReadOnlyList<SentenceSegment> segments = candidate.Segments is { Count: > 0 }
+                ? candidate.Segments
+                : [new SentenceSegment
+                {
+                    Start = 0,
+                    End = candidate.ConsumedCodeLength > 0 ? candidate.ConsumedCodeLength : _digits.Length,
+                    Word = candidate.Word,
+                    Pinyin = candidate.Pinyin,
+                    Kind = SentenceArcKind.Word
+                }];
+
+            _engine.LearnSelection(new T9Selection(
+                mode,
+                canonicalCode,
+                candidate.ConsumedCodeLength,
+                candidate.Word,
+                candidate.Pinyin,
+                candidate.MatchKind,
+                segments));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"记录学习失败: {ex.Message}");
+        }
     }
 
     private bool ContinueRemainder(T9Candidate candidate)
@@ -4122,6 +4173,12 @@ internal partial class T9OverlayWindow
         if (string.IsNullOrEmpty(text))
         {
             return;
+        }
+
+        // 非中文候选的直接输出（英文/数字/符号/语音）会打断中文搭配，切断 bigram 上文。
+        if (!_emittingChinese)
+        {
+            _engine.BreakLearningContext();
         }
 
         var nativeContextActive = ImeHost.Shared.CanCommitForeground();
