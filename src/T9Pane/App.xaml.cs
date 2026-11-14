@@ -67,6 +67,9 @@ public partial class App
         }
         ImeRegister.PointToNewestDll();
         ImeRegister.RepairProfileEnablement();
+        // 重新登录后活动输入法会回到微软拼音，后端随开机自启时在这里把 T9 激活回来，
+        // 避免重启后键盘不弹；内部已是 T9 则跳过，运行中手动切走不会被抢回。
+        InputProfileActivator.EnsureT9Active();
         _settings.OutputMode = OutputMode.BuiltInT9;
         _catalog.Refresh();
         _engine.Load(_catalog, _settings.ExtraLexiconDirectories);
